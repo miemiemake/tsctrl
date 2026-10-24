@@ -13,9 +13,14 @@
 //           rate with a harmless "get version" command and reports who answers.
 //   talk  : ESP32 acts as the controller on the selected link.
 //
+// Runs on ESP32 (hardware UARTs) and ESP8266 (software serial, the ESP8266 has
+// only one usable hardware UART and it is taken by the USB console).
 // See README.md next to this file for the wiring.
 
 #include <Arduino.h>
+#if defined(ESP8266)
+#include <SoftwareSerial.h>
+#endif
 
 // ---------------------------------------------------------------------------
 // Candidate links. "tx" is the ESP32 pin wired to the header pin the old
@@ -28,16 +33,57 @@ struct Link {
 	int rx;	// ESP32 GPIO <- controller RX header pin
 };
 
+#if defined(ESP8266)
+// NodeMCU / Wemos D1 labels in brackets. GPIO16 (D0) can transmit but not receive.
+static const Link LINKS[] = {
+	{ "A  J6-15 TXD0 / J6-16 RXD0", 5, 4 },		// D1 / D2
+	{ "B  J6-17 TXD1 / J6-18 RXD1", 14, 12 },	// D5 / D6
+	{ "C  J5-18 TXD2 / J5-17 RXD2", 16, 13 },	// D0 / D7
+};
+#else
 static const Link LINKS[] = {
 	{ "A  J6-15 TXD0 / J6-16 RXD0", 19, 18 },
 	{ "B  J6-17 TXD1 / J6-18 RXD1", 26, 25 },
 	{ "C  J5-18 TXD2 / J5-17 RXD2", 33, 32 },
 };
+#endif
 static const int LINK_COUNT = sizeof(LINKS) / sizeof(LINKS[0]);
+
+// ---------------------------------------------------------------------------
+// Two serial ports: picPort talks to / listens to the PIC, ctlPort only listens
+// to the old controller while sniffing.
+// ---------------------------------------------------------------------------
+#if defined(ESP8266)
+static SoftwareSerial picPort;
+static SoftwareSerial ctlPort;
+
+static void picOpen(uint32_t baud, int rx, int tx)
+{
+	picPort.begin(baud, SWSERIAL_8N1, rx, tx, false, 256);
+}
+
+static void ctlOpen(uint32_t baud, int rx)
+{
+	ctlPort.begin(baud, SWSERIAL_8N1, rx, -1, false, 256);	// receive only
+}
+#else
+static HardwareSerial &picPort = Serial2;
+static HardwareSerial &ctlPort = Serial1;
 
 // Unconnected pins used as dummy TX while sniffing, so we never drive the bus.
 static const int DUMMY_TX1 = 21;
 static const int DUMMY_TX2 = 22;
+
+static void picOpen(uint32_t baud, int rx, int tx)
+{
+	picPort.begin(baud, SERIAL_8N1, rx, tx < 0 ? DUMMY_TX2 : tx);
+}
+
+static void ctlOpen(uint32_t baud, int rx)
+{
+	ctlPort.begin(baud, SERIAL_8N1, rx, DUMMY_TX1);
+}
+#endif
 
 static const uint32_t BAUDS[] = { 115200, 57600, 38400, 19200, 9600 };
 static const int BAUD_COUNT = sizeof(BAUDS) / sizeof(BAUDS[0]);
@@ -217,8 +263,8 @@ static void parseByte(Parser &p, uint8_t ch)
 // ---------------------------------------------------------------------------
 static void stopUarts()
 {
-	Serial1.end();
-	Serial2.end();
+	picPort.end();
+	ctlPort.end();
 	for (int k = 0; k < LINK_COUNT; k++) {
 		pinMode(LINKS[k].tx, INPUT);	// high impedance: never drive a wire we are not using
 		pinMode(LINKS[k].rx, INPUT);
@@ -231,9 +277,9 @@ static void startSniff()
 {
 	stopUarts();
 	const Link &l = LINKS[curLink];
-	// Serial1 listens to what the old controller sends, Serial2 to what the PIC sends.
-	Serial1.begin(curBaud, SERIAL_8N1, l.tx, DUMMY_TX1);
-	Serial2.begin(curBaud, SERIAL_8N1, l.rx, DUMMY_TX2);
+	// ctlPort listens to what the old controller sends, picPort to what the PIC sends.
+	ctlOpen(curBaud, l.tx);
+	picOpen(curBaud, l.rx, -1);
 	mode = MODE_SNIFF;
 	Serial.printf("SNIFF on link %s at %lu baud. Listening only.\n", l.name, (unsigned long)curBaud);
 	Serial.println("Swipe a card, press the exit button, open the door, unlock from the software.");
@@ -243,7 +289,7 @@ static void startTalk()
 {
 	stopUarts();
 	const Link &l = LINKS[curLink];
-	Serial2.begin(curBaud, SERIAL_8N1, l.rx, l.tx);
+	picOpen(curBaud, l.rx, l.tx);
 	mode = MODE_TALK;
 	lastDog = 0;
 	Serial.printf("TALK on link %s at %lu baud. ESP32 is now the controller.\n", l.name, (unsigned long)curBaud);
@@ -271,15 +317,15 @@ static void sendFrame(uint8_t cmd, const uint8_t *data, int len)
 	Serial.printf("[TX  ] cmd %3u: ", cmd);
 	printHex(buf, frameLen);
 	Serial.println();
-	Serial2.write(buf, frameLen);
+	picPort.write(buf, frameLen);
 }
 
 static void pumpTalk(uint32_t ms)
 {
 	uint32_t t0 = millis();
 	while (millis() - t0 < ms) {
-		while (Serial2.available())
-			parseByte(pPic, Serial2.read());
+		while (picPort.available())
+			parseByte(pPic, picPort.read());
 		delay(1);
 	}
 }
@@ -480,13 +526,13 @@ void loop()
 	}
 
 	if (mode == MODE_SNIFF) {
-		while (Serial1.available())
-			parseByte(pCtl, Serial1.read());
-		while (Serial2.available())
-			parseByte(pPic, Serial2.read());
+		while (ctlPort.available())
+			parseByte(pCtl, ctlPort.read());
+		while (picPort.available())
+			parseByte(pPic, picPort.read());
 	} else if (mode == MODE_TALK) {
-		while (Serial2.available())
-			parseByte(pPic, Serial2.read());
+		while (picPort.available())
+			parseByte(pPic, picPort.read());
 		if (feedDog && millis() - lastDog > 10000) {
 			lastDog = millis();
 			uint8_t d[1] = { 60 };	// 60 s timeout, firmware default MCUDogTime

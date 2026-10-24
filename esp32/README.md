@@ -15,7 +15,7 @@ It has three modes:
 
 ## What you need
 
-- Any ESP32 dev board (ESP32-WROOM DevKit is fine).
+- An ESP32 dev board, or an ESP8266 board (ESP-12 / "ESP8266MOD", NodeMCU, Wemos D1 mini).
 - Six 1 kΩ resistors, jumper wires.
 - Power the ESP32 from USB during tests. Connect **only GND** to the C3 board,
   not 3.3 V, so the two supplies do not fight.
@@ -29,6 +29,7 @@ pin; it protects both sides if a pin direction turns out to be wrong.
 | ESP32 pin | Via | Board pin | Signal (EDK500 name) |
 | --- | --- | --- | --- |
 | GND | | J6-2 (or J5-10, J6-12) | GND |
+| | | | **ESP32 pins below; ESP8266 pins in the next table** |
 | GPIO19 | 1 kΩ | J6-15 | TXD0, link A to PIC |
 | GPIO18 | 1 kΩ | J6-16 | RXD0, link A from PIC |
 | GPIO26 | 1 kΩ | J6-17 | TXD1, link B to PIC |
@@ -36,20 +37,39 @@ pin; it protects both sides if a pin direction turns out to be wrong.
 | GPIO33 | 1 kΩ | J5-18 | TXD2, link C to PIC |
 | GPIO32 | 1 kΩ | J5-17 | RXD2, link C from PIC |
 
+ESP8266 (has only one hardware UART, used by USB, so the sketch uses software serial):
+
+| ESP8266 GPIO (NodeMCU label) | Via | Board pin | Signal (EDK500 name) |
+| --- | --- | --- | --- |
+| GND | | J6-2 | GND |
+| GPIO5 (D1) | 1 kΩ | J6-15 | TXD0, link A to PIC |
+| GPIO4 (D2) | 1 kΩ | J6-16 | RXD0, link A from PIC |
+| GPIO14 (D5) | 1 kΩ | J6-17 | TXD1, link B to PIC |
+| GPIO12 (D6) | 1 kΩ | J6-18 | RXD1, link B from PIC |
+| GPIO16 (D0) | 1 kΩ | J5-18 | TXD2, link C to PIC |
+| GPIO13 (D7) | 1 kΩ | J5-17 | RXD2, link C from PIC |
+
+Leave GPIO0 (D3), GPIO2 (D4) and GPIO15 (D8) free: they decide how the ESP8266 boots.
+Software serial at 115200 can drop the odd byte while sniffing both wires at once; if
+you see many `BAD SUM` lines, try again or sniff with `baud 57600` only if the scan
+says the PIC runs at that speed.
+
 Do **not** connect J6-10 (RESET_N), J5-11 (+1.8 V) or the JTAG pins.
 
-GPIO21 and GPIO22 are used as dummy TX pins while sniffing; leave them unconnected.
+ESP32 only: GPIO21 and GPIO22 are used as dummy TX pins while sniffing; leave them unconnected.
 
 Before wiring, with a multimeter: J6-1 and J6-13 should read 3.3 V, J5-9 about 5 V,
 J5-11 about 1.8 V. If not, stop: the header is a different layout from the EDK500.
 
 ## Build and flash
 
-Arduino IDE: install the "esp32 by Espressif" board package, open
-`pic_probe/pic_probe.ino`, pick "ESP32 Dev Module", upload. Open the serial monitor
+Arduino IDE: install the "esp32 by Espressif" or "esp8266 by ESP8266 Community"
+board package, open `pic_probe/pic_probe.ino`, pick "ESP32 Dev Module" or
+"NodeMCU 1.0 (ESP-12E Module)" / "LOLIN(WEMOS) D1 mini", upload. Open the serial monitor
 at 115200 with "Newline" line ending.
 
-PlatformIO: `pio run -t upload && pio device monitor` from this folder.
+PlatformIO: `pio run -e esp32dev -t upload` or `pio run -e nodemcuv2 -t upload`,
+then `pio device monitor`, from this folder.
 
 ## Test procedure
 
